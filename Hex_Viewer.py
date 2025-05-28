@@ -10,7 +10,7 @@ from PyQt5.QtGui import QColor, QFont, QIcon, QBrush, QColor
 
 class ProjectInfo:
     """项目信息元数据（集中管理所有项目相关信息）"""
-    VERSION = "3.8.0"
+    VERSION = "3.9.0"
     BUILD_DATE = "2025-05-26"
     # BUILD_DATE = datetime.now().strftime("%Y-%m-%d")  # 修改为动态获取当前日期
     AUTHOR = "杜玛"
@@ -19,7 +19,7 @@ class ProjectInfo:
     URL = "https://github.com/duma520"
     MAINTAINER_EMAIL = "不提供"
     NAME = "多文件十六进制比对工具"
-    DESCRIPTION = "多文件十六进制比对工具，支持多文件同时打开和比对，提供编辑模式和差异高亮显示。"
+    DESCRIPTION = "多文件十六进制比对工具，支持多文件同时打开和比对，提供编辑模式和差异高亮显示。支持多基准比对模式。"
     HELP_TEXT = """
 使用说明:
 
@@ -142,7 +142,13 @@ class HexViewer(QMainWindow):
         self.edit_button.setCheckable(True)
         self.edit_button.clicked.connect(self.toggle_edit_mode)
         button_layout.addWidget(self.edit_button)
-        
+    
+        # 新添加的多基准比对按钮
+        self.multi_compare_button = QPushButton("多基准比对")
+        self.multi_compare_button.clicked.connect(self.compare_multiple_files)
+        self.multi_compare_button.setEnabled(False)
+        button_layout.addWidget(self.multi_compare_button)
+    
         button_layout.addStretch()
         
         main_layout.addLayout(button_layout)
@@ -276,7 +282,13 @@ class HexViewer(QMainWindow):
             
             # 创建十六进制视图
             self.create_hex_view(file_path)
-            
+        
+            # 更新按钮状态
+            if len(self.file_data) > 1:
+                self.compare_button.setEnabled(True)
+            if len(self.file_data) > 2:
+                self.multi_compare_button.setEnabled(True)
+
         except Exception as e:
             QMessageBox.warning(self, "错误", f"无法打开文件 {file_path}:\n{str(e)}")
     
@@ -560,6 +572,7 @@ class HexViewer(QMainWindow):
         self.h_scroll_bars = []
         self.edit_mode = False
         self.edit_button.setChecked(False)
+        self.multi_compare_button.setEnabled(False)
 
     def compare_files(self):
         if len(self.file_data) < 2:
@@ -720,6 +733,121 @@ class HexViewer(QMainWindow):
         
         # 解除信号阻塞
         self.scroll_sync_enabled = True
+
+    def compare_multiple_files(self):
+        """比对三个及以上文件的共同差异"""
+        if len(self.file_data) < 3:
+            QMessageBox.warning(self, "警告", "至少需要三个文件进行多基准比对")
+            return
+        
+        try:
+            # 获取所有文件内容
+            files = list(self.file_data.items())
+            
+            # 找到最大长度
+            max_len = max(len(content) for _, content in files)
+            
+            # 比较差异 - 找出所有文件中不相同的字节位置
+            differences = {}
+            for i in range(max_len):
+                # 收集所有文件在该位置的字节值
+                byte_values = set()
+                for file_path, content in files:
+                    if i < len(content):
+                        byte_values.add(content[i])
+                    else:
+                        byte_values.add(None)  # 表示文件比最短的文件长
+                
+                # 如果有超过1个不同的值，则标记为差异
+                if len(byte_values) > 1:
+                    differences[i] = True
+            
+            # 高亮差异
+            self.highlight_differences(differences)
+            
+            self.status_label.setText(f"多基准比对完成，共发现 {len(differences)} 处差异")
+            
+        except Exception as e:
+            QMessageBox.critical(self, "错误", f"多基准比对过程中发生错误: {str(e)}")
+
+    def highlight_differences(self, differences):
+        """高亮显示差异位置（重构后的通用方法）"""
+        for file_path, file_view in self.hex_views.items():
+            scroll_area = file_view.findChild(QScrollArea)
+            if not scroll_area:
+                continue
+                
+            hex_widget = scroll_area.widget()
+            if not hex_widget:
+                continue
+            
+            # 遍历所有行
+            for line_widget in hex_widget.findChildren(QWidget):
+                if not line_widget or not line_widget.layout():
+                    continue
+                
+                # 获取地址
+                addr_item = line_widget.layout().itemAt(0)
+                if not addr_item:
+                    continue
+                    
+                addr_label = addr_item.widget()
+                if not isinstance(addr_label, QLabel):
+                    continue
+                
+                try:
+                    offset = int(addr_label.text(), 16)
+                except:
+                    continue
+                
+                # 检查这一行是否有差异
+                has_diff = False
+                for i in range(16):
+                    pos = offset + i
+                    if pos in differences:
+                        has_diff = True
+                        break
+                
+                if has_diff:
+                    # 高亮整行
+                    line_widget.setAutoFillBackground(True)
+                    palette = line_widget.palette()
+                    palette.setColor(line_widget.backgroundRole(), QColor(255, 255, 200))
+                    line_widget.setPalette(palette)
+                    
+                    # 高亮具体差异字节
+                    hex_sub_item = line_widget.layout().itemAt(1)
+                    if hex_sub_item:
+                        hex_sub_widget = hex_sub_item.widget()
+                        if hex_sub_widget and hex_sub_widget.layout():
+                            for i in range(hex_sub_widget.layout().count()):
+                                item = hex_sub_widget.layout().itemAt(i)
+                                if item:
+                                    widget = item.widget()
+                                    if isinstance(widget, (QLabel, QLineEdit)):
+                                        pos = offset + i
+                                        if pos in differences:
+                                            palette = widget.palette()
+                                            palette.setColor(widget.backgroundRole(), QColor(255, 200, 200))
+                                            widget.setPalette(palette)
+                    
+                    # 高亮ASCII部分
+                    ascii_item = line_widget.layout().itemAt(2)
+                    if ascii_item:
+                        ascii_widget = ascii_item.widget()
+                        if ascii_widget and ascii_widget.layout():
+                            for i in range(ascii_widget.layout().count()):
+                                item = ascii_widget.layout().itemAt(i)
+                                if item:
+                                    char_label = item.widget()
+                                    if isinstance(char_label, QLabel):
+                                        pos = offset + i
+                                        if pos in differences:
+                                            palette = char_label.palette()
+                                            palette.setColor(char_label.backgroundRole(), QColor(255, 200, 200))
+                                            char_label.setPalette(palette)
+
+
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
